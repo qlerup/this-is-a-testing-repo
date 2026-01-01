@@ -13,7 +13,7 @@ jobs:
       - name: Reset labels (delete extras + create/update desired)
         env:
           GH_TOKEN: ${{ github.token }}
-          DESIRED_LABELS_JSON: >
+          DESIRED_LABELS_JSON: >-
             [
               { "name": "Awaiting response", "color": "FFFF00", "description": "" },
               { "name": "bug", "color": "d73a4a", "description": "Bug: errors, crashes, unexpected behavior" },
@@ -35,12 +35,8 @@ jobs:
           REPO="${GITHUB_REPOSITORY#*/}"
           echo "Repo: $OWNER/$REPO"
 
-          # URL-encode label names for API paths
           urlencode () {
-            python - <<'PY' "$1"
-import urllib.parse, sys
-print(urllib.parse.quote(sys.argv[1], safe=""))
-PY
+            python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
           # Build desired set
@@ -69,6 +65,7 @@ PY
             enc="$(urlencode "$name")"
 
             echo "Upserting label: $name"
+
             # Try update first; if it fails, create it
             if gh api -X PATCH "repos/$OWNER/$REPO/labels/$enc" \
               -f new_name="$name" \
