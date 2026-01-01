@@ -99,6 +99,8 @@ jobs:
               }
             }
 
+            const lastReopenCache = new Map();
+
             async function listAllComments(issue_number) {
               return await github.paginate(
                 github.rest.issues.listComments,
@@ -106,9 +108,47 @@ jobs:
               );
             }
 
+            async function getLastReopenAt(issue_number) {
+              if (lastReopenCache.has(issue_number)) return lastReopenCache.get(issue_number);
+
+              const events = await github.paginate(
+                github.rest.issues.listEvents,
+                { owner, repo, issue_number, per_page: 100 }
+              );
+
+              const reopened = events.filter(e => e.event === 'reopened');
+              if (!reopened.length) {
+                lastReopenCache.set(issue_number, null);
+                return null;
+              }
+
+              const latest = reopened.reduce((acc, e) =>
+                new Date(e.created_at) > new Date(acc.created_at) ? e : acc
+              );
+
+              const dt = new Date(latest.created_at);
+              lastReopenCache.set(issue_number, dt);
+              return dt;
+            }
+
             async function upsertComment(issue_number, marker, body) {
-              const comments = await listAllComments(issue_number);
-              const existing = comments.find(c => (c.body || '').includes(marker));
+              const [comments, lastReopenAt] = await Promise.all([
+                listAllComments(issue_number),
+                getLastReopenAt(issue_number),
+              ]);
+
+              let existing = null;
+
+              if (lastReopenAt) {
+                existing = comments
+                  .filter(c => (c.body || '').includes(marker))
+                  .filter(c => new Date(c.updated_at || c.created_at) > lastReopenAt)
+                  .sort((a, b) =>
+                    new Date(b.updated_at || b.created_at) - new Date(a.updated_at || a.created_at)
+                  )[0] || null;
+              } else {
+                existing = comments.find(c => (c.body || '').includes(marker)) || null;
+              }
 
               if (existing) {
                 await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
