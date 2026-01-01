@@ -21,7 +21,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           # Change these to whatever repos you want to compare "latest release" against
-          CARD_REPO: qlerup/lovelace-thermostat-pro-timeline
+          CARD_REPO: qlerup/this-is-a-testing-repo
           SYNC_REPO: qlerup/thermostat-pro-timeline-sync
         with:
           script: |
