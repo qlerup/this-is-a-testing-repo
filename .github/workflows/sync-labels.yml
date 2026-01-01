@@ -11,7 +11,17 @@ jobs:
   labels:
     runs-on: ubuntu-latest
     steps:
-      - uses: EndBug/label-sync@v2
+      # Debug: viser om filen kan hentes fra runneren
+      - name: Debug fetch labels.json
+        run: |
+          set -e
+          curl -iL https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json | head -n 20
+
+      - name: Sync labels
+        uses: EndBug/label-sync@v2
         with:
           config-file: https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json
           delete-other-labels: true
+
+          # NØDVENDIG hvis my-automation-repo er privat:
+          request-token: ${{ secrets.LABEL_SYNC_TOKEN }}
