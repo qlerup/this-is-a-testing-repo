@@ -20,8 +20,7 @@ jobs:
       - name: Extract versions + compare with latest releases
         uses: actions/github-script@v7
         env:
-          # Change these to whatever repos you want to compare "latest release" against
-          CARD_REPO: qlerup/this-is-a-testing-repo
+          CARD_REPO: qlerup/lovelace-thermostat-pro-timeline
           SYNC_REPO: qlerup/thermostat-pro-timeline-sync
         with:
           script: |
@@ -35,7 +34,7 @@ jobs:
               return String(v)
                 .trim()
                 .replace(/^v/i, '')
-                .replace(/[,\.\)\]\}]+$/g, '')   // trim trailing punctuation
+                .replace(/[,\.\)\]\}]+$/g, '') // trim trailing punctuation
                 .trim();
             }
 
@@ -47,7 +46,7 @@ jobs:
               return false;
             }
 
-            // Semver-ish validate: supports multi-digit (10.1.5 / 5.10.3 etc.)
+            // Validate versions like 1.2, 1.2.3, 10.1.5, 5.10.3, 1.2.3-beta.1
             const SEMVERISH = /^(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?$/;
 
             function parseSemverish(v) {
@@ -67,7 +66,6 @@ jobs:
             }
 
             function maxVersion(versions) {
-              // pick the highest semver-ish version
               const filtered = (versions || [])
                 .map(normalizeVersion)
                 .filter(v => v && SEMVERISH.test(v) && !isMissingOrPlaceholderVersion(v));
@@ -111,10 +109,13 @@ jobs:
               try { return JSON.parse(s0.slice(start, end + 1)); } catch { return null; }
             }
 
-            // --- Regex extraction: collect all matches "near" keywords and pick highest ---
-            function extractVersionsRegexAll(text) {
-              const versionPat = String.raw`(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?`;
+            // --- IMPORTANT: safer version core ---
+            // - allows 1.2.3 or 1.2 (but not partial matches inside 1.0.2 like "0.2")
+            // - we enforce: NOT preceded by a dot (so we can't start mid-version)
+            const versionCore = String.raw`(?:v)?(?:\d+\.\d+\.\d+|\d+\.\d+(?!\.\d))(?:[-+][0-9A-Za-z\.-]+)?`;
 
+            // --- Regex extraction: collect all matches near keywords and pick highest ---
+            function extractVersionsRegexAll(text) {
               const cardKw = /(?:\bcard\b|\bkort\b|\blovelace\b|\bthermostat\b)/i;
               const syncKw = /(?:\bsync\b(?:\s+integration)?|\bsync-integration\b|\bthermostat-pro-timeline-sync\b)/i;
 
@@ -122,10 +123,14 @@ jobs:
 
               function collectNear(keywordRegex) {
                 const out = [];
-                // keyword ... version (same line)
-                const p1 = new RegExp(String.raw`${keywordRegex.source}[^\n]{0,220}\b(${versionPat})\b`, 'ig');
-                // version ... keyword (same line)
-                const p2 = new RegExp(String.raw`\b(${versionPat})\b[^\n]{0,140}${keywordRegex.source}`, 'ig');
+                const p1 = new RegExp(
+                  String.raw`${keywordRegex.source}[^\n]{0,240}\b(?<!\.)(` + versionCore + String.raw`)\b`,
+                  'ig'
+                );
+                const p2 = new RegExp(
+                  String.raw`\b(?<!\.)(` + versionCore + String.raw`)\b[^\n]{0,160}${keywordRegex.source}`,
+                  'ig'
+                );
 
                 for (const m of t.matchAll(p1)) if (m?.[1]) out.push(m[1]);
                 for (const m of t.matchAll(p2)) if (m?.[1]) out.push(m[1]);
@@ -201,12 +206,12 @@ jobs:
               return { card, sync };
             }
 
-            // --- Decide what to scan (IMPORTANT FIX: prefer comment over body) ---
+            // --- Decide what to scan (prefer comment, fill from body) ---
             const payload = context.payload;
             const issue = payload.issue;
             const issueNumber = issue.number;
 
-            let bodyText = issue.body || "";
+            const bodyText = issue.body || "";
             let commentText = "";
 
             if (context.eventName === "issue_comment") {
@@ -217,16 +222,13 @@ jobs:
               commentText = comment.body || "";
             }
 
-            // 1) Try to get versions from comment (if present), then fill missing from body
             let card = "", sync = "";
 
             if (commentText) {
-              // AI first on comment
               const ai = await extractVersionsAI(commentText);
               card = ai.card;
               sync = ai.sync;
 
-              // Regex fallback on comment (fills missing)
               if (!card || !sync) {
                 const rx = extractVersionsRegexAll(commentText);
                 card = card || rx.card;
@@ -234,7 +236,6 @@ jobs:
               }
             }
 
-            // Fill remaining from body (AI -> regex)
             if (!card || !sync) {
               const aiBody = await extractVersionsAI(bodyText);
               card = card || aiBody.card;
@@ -247,10 +248,9 @@ jobs:
               }
             }
 
-            // If missing either -> do nothing (let your other action ask)
             if (!card || !sync) return;
 
-            // Avoid duplicate comments for same version pair
+            // Avoid duplicate comments for the same version pair
             const existingComments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -269,25 +269,17 @@ jobs:
             // Fetch latest releases
             const latestCard = await getLatestTag(cardRepo);
             const latestSync = await getLatestTag(syncRepo);
-
             if (!latestCard.tag || !latestSync.tag) return;
 
-            const userCard = parseSemverish(card);
-            const userSync = parseSemverish(sync);
-            const newestCard = parseSemverish(latestCard.tag);
-            const newestSync = parseSemverish(latestSync.tag);
-
-            const cardCmp = cmp(userCard, newestCard);
-            const syncCmp = cmp(userSync, newestSync);
+            const cardCmp = cmp(parseSemverish(card), parseSemverish(latestCard.tag));
+            const syncCmp = cmp(parseSemverish(sync), parseSemverish(latestSync.tag));
             if (cardCmp === null || syncCmp === null) return;
 
             const needsCardUpdate = cardCmp === -1;
             const needsSyncUpdate = syncCmp === -1;
 
-            // If both up to date -> silent
             if (!needsCardUpdate && !needsSyncUpdate) return;
 
-            // Tailored English comment
             const lines = [marker, signatureLine, ""];
 
             if (needsCardUpdate && needsSyncUpdate) {
@@ -310,7 +302,6 @@ jobs:
               );
             }
 
-            // Consistent status lines ✅ / ❌
             if (needsCardUpdate) {
               lines.push(`- **Card**: you have \`${card}\` ❌ (latest is \`${latestCard.tag}\` — ${latestCard.url})`);
             } else {
