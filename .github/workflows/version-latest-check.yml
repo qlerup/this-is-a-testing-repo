@@ -20,7 +20,7 @@ jobs:
       - name: Extract versions + compare with latest releases
         uses: actions/github-script@v7
         env:
-          CARD_REPO: qlerup/lovelace-thermostat-pro-timeline
+          CARD_REPO: qlerup/this-is-a-testing-repo
           SYNC_REPO: qlerup/thermostat-pro-timeline-sync
         with:
           script: |
