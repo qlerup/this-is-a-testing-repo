@@ -1,0 +1,15 @@
+name: Sync labels
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: EndBug/label-sync@v2
+        with:
+          config-file: https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.yml
+          delete-other-labels: true
