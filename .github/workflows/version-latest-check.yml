@@ -20,7 +20,8 @@ jobs:
       - name: Extract versions + compare with latest releases
         uses: actions/github-script@v7
         env:
-          CARD_REPO: qlerup/this-is-a-testing-repo
+          # Change these to whatever repos you want to compare "latest release" against
+          CARD_REPO: qlerup/lovelace-thermostat-pro-timeline
           SYNC_REPO: qlerup/thermostat-pro-timeline-sync
         with:
           script: |
@@ -31,15 +32,22 @@ jobs:
 
             function normalizeVersion(v) {
               if (!v) return '';
-              // Trim + drop leading v + drop trailing punctuation (commas/periods/parens/brackets)
               return String(v)
                 .trim()
                 .replace(/^v/i, '')
-                .replace(/[,\.\)\]\}]+$/g, '')
+                .replace(/[,\.\)\]\}]+$/g, '')   // trim trailing punctuation
                 .trim();
             }
 
-            // Semver-ish validate: 1.2, 1.2.3, v1.2.3, 1.2.3-beta.1 (multi-digit supported)
+            function isMissingOrPlaceholderVersion(v) {
+              const n = normalizeVersion(v).toLowerCase();
+              if (!n) return true;
+              if (["n/a", "na", "unknown", "none", "-"].includes(n)) return true;
+              if (/^(?:0+\.)+0+$/.test(n)) return true; // 0.0 / 0.0.0 / ...
+              return false;
+            }
+
+            // Semver-ish validate: supports multi-digit (10.1.5 / 5.10.3 etc.)
             const SEMVERISH = /^(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?$/;
 
             function parseSemverish(v) {
@@ -56,6 +64,22 @@ jobs:
               if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1;
               if (a.patch !== b.patch) return a.patch < b.patch ? -1 : 1;
               return 0;
+            }
+
+            function maxVersion(versions) {
+              // pick the highest semver-ish version
+              const filtered = (versions || [])
+                .map(normalizeVersion)
+                .filter(v => v && SEMVERISH.test(v) && !isMissingOrPlaceholderVersion(v));
+
+              if (filtered.length === 0) return "";
+
+              let best = filtered[0];
+              for (const v of filtered.slice(1)) {
+                const c = cmp(parseSemverish(best), parseSemverish(v));
+                if (c === -1) best = v;
+              }
+              return best;
             }
 
             function parseOwnerRepo(s) {
@@ -84,37 +108,41 @@ jobs:
               const start = s0.indexOf('{');
               const end = s0.lastIndexOf('}');
               if (start === -1 || end === -1 || end <= start) return null;
-              try {
-                return JSON.parse(s0.slice(start, end + 1));
-              } catch {
-                return null;
-              }
+              try { return JSON.parse(s0.slice(start, end + 1)); } catch { return null; }
             }
 
-            // --- Regex fallback ---
-            function extractVersionNear(keywordRegex, text, maxAfter = 140, maxBefore = 100) {
+            // --- Regex extraction: collect all matches "near" keywords and pick highest ---
+            function extractVersionsRegexAll(text) {
               const versionPat = String.raw`(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?`;
-              const t = text || "";
 
-              const p1 = new RegExp(String.raw`${keywordRegex.source}[^\n]{0,${maxAfter}}\b(${versionPat})\b`, 'i');
-              const p2 = new RegExp(String.raw`\b(${versionPat})\b[^\n]{0,${maxBefore}}${keywordRegex.source}`, 'i');
-
-              let m = t.match(p1);
-              if (m?.[1]) return m[1];
-              m = t.match(p2);
-              if (m?.[1]) return m[1];
-              return '';
-            }
-
-            function extractVersionsRegex(text) {
               const cardKw = /(?:\bcard\b|\bkort\b|\blovelace\b|\bthermostat\b)/i;
               const syncKw = /(?:\bsync\b(?:\s+integration)?|\bsync-integration\b|\bthermostat-pro-timeline-sync\b)/i;
-              const card = normalizeVersion(extractVersionNear(cardKw, text));
-              const sync = normalizeVersion(extractVersionNear(syncKw, text));
-              return { card, sync };
+
+              const t = text || "";
+
+              function collectNear(keywordRegex) {
+                const out = [];
+                // keyword ... version (same line)
+                const p1 = new RegExp(String.raw`${keywordRegex.source}[^\n]{0,220}\b(${versionPat})\b`, 'ig');
+                // version ... keyword (same line)
+                const p2 = new RegExp(String.raw`\b(${versionPat})\b[^\n]{0,140}${keywordRegex.source}`, 'ig');
+
+                for (const m of t.matchAll(p1)) if (m?.[1]) out.push(m[1]);
+                for (const m of t.matchAll(p2)) if (m?.[1]) out.push(m[1]);
+
+                return out;
+              }
+
+              const cardCandidates = collectNear(cardKw);
+              const syncCandidates = collectNear(syncKw);
+
+              return {
+                card: maxVersion(cardCandidates),
+                sync: maxVersion(syncCandidates),
+              };
             }
 
-            // --- AI extraction ---
+            // --- AI extraction (per text block) ---
             async function extractVersionsAI(text) {
               const payload = {
                 model: "openai/gpt-4.1",
@@ -132,6 +160,7 @@ jobs:
                       "Rules:",
                       "- If you are not sure, return empty string.",
                       "- Do NOT invent versions.",
+                      "- Treat placeholders like 0.0, 0.0.0, N/A, unknown as empty string.",
                       "- Accept versions like: 1.2, 1.2.3, v1.2.3, 1.2.3-beta.1",
                       "- card_version refers to the Lovelace card / dashboard card.",
                       "- sync_version refers to the Sync integration.",
@@ -139,7 +168,7 @@ jobs:
                   },
                   { role: "user", content: text || "" },
                 ],
-                // If supported in your environment:
+                // If supported:
                 // response_format: { type: "json_object" },
               };
 
@@ -163,48 +192,62 @@ jobs:
               const raw = (data?.choices?.[0]?.message?.content || "").trim();
               const obj = safeJsonFromModel(raw) || {};
 
-              const card = normalizeVersion(obj.card_version || "");
-              const sync = normalizeVersion(obj.sync_version || "");
+              let card = normalizeVersion(obj.card_version || "");
+              let sync = normalizeVersion(obj.sync_version || "");
 
-              return {
-                card: SEMVERISH.test(card) ? card : "",
-                sync: SEMVERISH.test(sync) ? sync : "",
-              };
+              if (!SEMVERISH.test(card) || isMissingOrPlaceholderVersion(card)) card = "";
+              if (!SEMVERISH.test(sync) || isMissingOrPlaceholderVersion(sync)) sync = "";
+
+              return { card, sync };
             }
 
-            // --- Decide what text to scan ---
+            // --- Decide what to scan (IMPORTANT FIX: prefer comment over body) ---
             const payload = context.payload;
             const issue = payload.issue;
             const issueNumber = issue.number;
 
-            let textToScan = "";
+            let bodyText = issue.body || "";
+            let commentText = "";
 
-            if (context.eventName === "issues") {
-              // opened/edited: scan the body
-              textToScan = issue.body || "";
-            } else if (context.eventName === "issue_comment") {
+            if (context.eventName === "issue_comment") {
               const comment = payload.comment;
               const creator = issue.user?.login;
               if (!comment || !creator) return;
-
-              // Only react when the ISSUE CREATOR comments/edits a comment
-              if (comment.user?.login !== creator) return;
-
-              // Combine body + comment
-              textToScan = `${issue.body || ""}\n\n${comment.body || ""}`;
-            } else {
-              return;
+              if (comment.user?.login !== creator) return; // only creator
+              commentText = comment.body || "";
             }
 
-            // 1) AI extraction, 2) regex fallback
-            let { card, sync } = await extractVersionsAI(textToScan);
+            // 1) Try to get versions from comment (if present), then fill missing from body
+            let card = "", sync = "";
+
+            if (commentText) {
+              // AI first on comment
+              const ai = await extractVersionsAI(commentText);
+              card = ai.card;
+              sync = ai.sync;
+
+              // Regex fallback on comment (fills missing)
+              if (!card || !sync) {
+                const rx = extractVersionsRegexAll(commentText);
+                card = card || rx.card;
+                sync = sync || rx.sync;
+              }
+            }
+
+            // Fill remaining from body (AI -> regex)
             if (!card || !sync) {
-              const r = extractVersionsRegex(textToScan);
-              card = card || r.card;
-              sync = sync || r.sync;
+              const aiBody = await extractVersionsAI(bodyText);
+              card = card || aiBody.card;
+              sync = sync || aiBody.sync;
+
+              if (!card || !sync) {
+                const rxBody = extractVersionsRegexAll(bodyText);
+                card = card || rxBody.card;
+                sync = sync || rxBody.sync;
+              }
             }
 
-            // Missing either -> do nothing (your other action will ask)
+            // If missing either -> do nothing (let your other action ask)
             if (!card || !sync) return;
 
             // Avoid duplicate comments for same version pair
