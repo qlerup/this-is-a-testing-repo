@@ -1,4 +1,5 @@
 name: Sync labels
+
 on:
   workflow_dispatch:
 
@@ -11,5 +12,5 @@ jobs:
     steps:
       - uses: EndBug/label-sync@v2
         with:
-          config-file: https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.yml
+          config-file: https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json
           delete-other-labels: true
