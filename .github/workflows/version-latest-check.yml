@@ -1,0 +1,290 @@
+name: Check reported versions vs latest releases
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  contents: read
+  models: read
+
+jobs:
+  check:
+    if: github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract versions + compare with latest releases
+        uses: actions/github-script@v7
+        env:
+          CARD_REPO: qlerup/lovelace-thermostat-pro-timeline
+          SYNC_REPO: qlerup/thermostat-pro-timeline-sync
+        with:
+          script: |
+            const marker = '<!-- version-latest-check -->';
+
+            const cardRepo = process.env.CARD_REPO;
+            const syncRepo = process.env.SYNC_REPO;
+
+            function normalizeVersion(v) {
+              if (!v) return '';
+              // Trim + drop leading v + drop trailing punctuation (commas/periods/parens/brackets)
+              return String(v)
+                .trim()
+                .replace(/^v/i, '')
+                .replace(/[,\.\)\]\}]+$/g, '')
+                .trim();
+            }
+
+            // Semver-ish validate: 1.2, 1.2.3, v1.2.3, 1.2.3-beta.1 (multi-digit supported)
+            const SEMVERISH = /^(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?$/;
+
+            function parseSemverish(v) {
+              const n = normalizeVersion(v);
+              const m = n.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
+              if (!m) return null;
+              return { major: +m[1], minor: +m[2], patch: +(m[3] ?? 0) };
+            }
+
+            function cmp(a, b) {
+              // -1 if a<b, 0 if equal, 1 if a>b
+              if (!a || !b) return null;
+              if (a.major !== b.major) return a.major < b.major ? -1 : 1;
+              if (a.minor !== b.minor) return a.minor < b.minor ? -1 : 1;
+              if (a.patch !== b.patch) return a.patch < b.patch ? -1 : 1;
+              return 0;
+            }
+
+            function parseOwnerRepo(s) {
+              const parts = (s || '').trim().split('/');
+              if (parts.length !== 2) return null;
+              return { owner: parts[0], repo: parts[1] };
+            }
+
+            async function getLatestTag(fullRepo) {
+              const or = parseOwnerRepo(fullRepo);
+              if (!or) return { tag: '', url: '', error: `Invalid repo format: ${fullRepo}` };
+              try {
+                const res = await github.rest.repos.getLatestRelease({ owner: or.owner, repo: or.repo });
+                const tag = res?.data?.tag_name || '';
+                const url = res?.data?.html_url || `https://github.com/${or.owner}/${or.repo}/releases/latest`;
+                return { tag: normalizeVersion(tag), url, error: '' };
+              } catch (e) {
+                return { tag: '', url: '', error: `Could not fetch latest release for ${fullRepo}: ${e.message}` };
+              }
+            }
+
+            function safeJsonFromModel(raw) {
+              const s0 = (raw || '').trim()
+                .replace(/^\s*```(?:json)?\s*/i, '')
+                .replace(/\s*```\s*$/i, '');
+              const start = s0.indexOf('{');
+              const end = s0.lastIndexOf('}');
+              if (start === -1 || end === -1 || end <= start) return null;
+              try {
+                return JSON.parse(s0.slice(start, end + 1));
+              } catch {
+                return null;
+              }
+            }
+
+            // --- Regex fallback ---
+            function extractVersionNear(keywordRegex, text, maxAfter = 140, maxBefore = 100) {
+              const versionPat = String.raw`(?:v)?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z\.-]+)?`;
+              const t = text || "";
+
+              const p1 = new RegExp(String.raw`${keywordRegex.source}[^\n]{0,${maxAfter}}\b(${versionPat})\b`, 'i');
+              const p2 = new RegExp(String.raw`\b(${versionPat})\b[^\n]{0,${maxBefore}}${keywordRegex.source}`, 'i');
+
+              let m = t.match(p1);
+              if (m?.[1]) return m[1];
+              m = t.match(p2);
+              if (m?.[1]) return m[1];
+              return '';
+            }
+
+            function extractVersionsRegex(text) {
+              const cardKw = /(?:\bcard\b|\bkort\b|\blovelace\b|\bthermostat\b)/i;
+              const syncKw = /(?:\bsync\b(?:\s+integration)?|\bsync-integration\b|\bthermostat-pro-timeline-sync\b)/i;
+              const card = normalizeVersion(extractVersionNear(cardKw, text));
+              const sync = normalizeVersion(extractVersionNear(syncKw, text));
+              return { card, sync };
+            }
+
+            // --- AI extraction ---
+            async function extractVersionsAI(text) {
+              const payload = {
+                model: "openai/gpt-4.1",
+                temperature: 0,
+                messages: [
+                  {
+                    role: "system",
+                    content: [
+                      "You extract software version numbers from text.",
+                      "",
+                      "Return ONLY valid JSON with keys:",
+                      '- card_version: string or ""',
+                      '- sync_version: string or ""',
+                      "",
+                      "Rules:",
+                      "- If you are not sure, return empty string.",
+                      "- Do NOT invent versions.",
+                      "- Accept versions like: 1.2, 1.2.3, v1.2.3, 1.2.3-beta.1",
+                      "- card_version refers to the Lovelace card / dashboard card.",
+                      "- sync_version refers to the Sync integration.",
+                    ].join("\n"),
+                  },
+                  { role: "user", content: text || "" },
+                ],
+                // If supported in your environment:
+                // response_format: { type: "json_object" },
+              };
+
+              const res = await fetch("https://models.github.ai/inference/chat/completions", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
+                  "Content-Type": "application/json",
+                  Accept: "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+                },
+                body: JSON.stringify(payload),
+              });
+
+              if (!res.ok) {
+                core.warning(`Models API failed: ${res.status} ${res.statusText}`);
+                return { card: "", sync: "" };
+              }
+
+              const data = await res.json();
+              const raw = (data?.choices?.[0]?.message?.content || "").trim();
+              const obj = safeJsonFromModel(raw) || {};
+
+              const card = normalizeVersion(obj.card_version || "");
+              const sync = normalizeVersion(obj.sync_version || "");
+
+              return {
+                card: SEMVERISH.test(card) ? card : "",
+                sync: SEMVERISH.test(sync) ? sync : "",
+              };
+            }
+
+            // --- Decide what text to scan ---
+            const payload = context.payload;
+            const issue = payload.issue;
+            const issueNumber = issue.number;
+
+            let textToScan = "";
+
+            if (context.eventName === "issues") {
+              // opened/edited: scan the body
+              textToScan = issue.body || "";
+            } else if (context.eventName === "issue_comment") {
+              const comment = payload.comment;
+              const creator = issue.user?.login;
+              if (!comment || !creator) return;
+
+              // Only react when the ISSUE CREATOR comments/edits a comment
+              if (comment.user?.login !== creator) return;
+
+              // Combine body + comment
+              textToScan = `${issue.body || ""}\n\n${comment.body || ""}`;
+            } else {
+              return;
+            }
+
+            // 1) AI extraction, 2) regex fallback
+            let { card, sync } = await extractVersionsAI(textToScan);
+            if (!card || !sync) {
+              const r = extractVersionsRegex(textToScan);
+              card = card || r.card;
+              sync = sync || r.sync;
+            }
+
+            // Missing either -> do nothing (your other action will ask)
+            if (!card || !sync) return;
+
+            // Avoid duplicate comments for same version pair
+            const existingComments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+
+            const signatureLine = `Checked versions: card=${card}, sync=${sync}`;
+            const already = (existingComments.data || []).some(c =>
+              (c.body || "").includes(marker) &&
+              (c.body || "").includes(`card=${card}`) &&
+              (c.body || "").includes(`sync=${sync}`)
+            );
+            if (already) return;
+
+            // Fetch latest releases
+            const latestCard = await getLatestTag(cardRepo);
+            const latestSync = await getLatestTag(syncRepo);
+
+            if (!latestCard.tag || !latestSync.tag) return;
+
+            const userCard = parseSemverish(card);
+            const userSync = parseSemverish(sync);
+            const newestCard = parseSemverish(latestCard.tag);
+            const newestSync = parseSemverish(latestSync.tag);
+
+            const cardCmp = cmp(userCard, newestCard);
+            const syncCmp = cmp(userSync, newestSync);
+            if (cardCmp === null || syncCmp === null) return;
+
+            const needsCardUpdate = cardCmp === -1;
+            const needsSyncUpdate = syncCmp === -1;
+
+            // If both up to date -> silent
+            if (!needsCardUpdate && !needsSyncUpdate) return;
+
+            // Tailored English comment
+            const lines = [marker, signatureLine, ""];
+
+            if (needsCardUpdate && needsSyncUpdate) {
+              lines.push(
+                "Hi! It looks like both the Card and the Sync integration are not on the latest release.",
+                "Please update both to the latest versions and try again. If the issue still happens afterwards, reply here with the results.",
+                ""
+              );
+            } else if (needsCardUpdate && !needsSyncUpdate) {
+              lines.push(
+                "Hi! Your Sync integration version looks up to date, but the Card is not on the latest release.",
+                "Please update the Card to the latest version and try again. If the issue still happens afterwards, reply here with the results.",
+                ""
+              );
+            } else if (!needsCardUpdate && needsSyncUpdate) {
+              lines.push(
+                "Hi! Your Card version looks up to date, but the Sync integration is not on the latest release.",
+                "Please update the Sync integration to the latest version and try again. If the issue still happens afterwards, reply here with the results.",
+                ""
+              );
+            }
+
+            // Consistent status lines ✅ / ❌
+            if (needsCardUpdate) {
+              lines.push(`- **Card**: you have \`${card}\` ❌ (latest is \`${latestCard.tag}\` — ${latestCard.url})`);
+            } else {
+              lines.push(`- **Card**: you have \`${card}\` ✅ (latest)`);
+            }
+
+            if (needsSyncUpdate) {
+              lines.push(`- **Sync integration**: you have \`${sync}\` ❌ (latest is \`${latestSync.tag}\` — ${latestSync.url})`);
+            } else {
+              lines.push(`- **Sync integration**: you have \`${sync}\` ✅ (latest)`);
+            }
+
+            lines.push("", "Thanks 🙏");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: lines.join("\n"),
+            });
