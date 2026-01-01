@@ -4,24 +4,21 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
   issues: write
 
 jobs:
   labels:
     runs-on: ubuntu-latest
     steps:
-      # Debug: viser om filen kan hentes fra runneren
-      - name: Debug fetch labels.json
+      - name: Download labels config (JSON)
         run: |
-          set -e
-          curl -iL https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json | head -n 20
+          set -euo pipefail
+          curl -fsSL \
+            "https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json" \
+            -o labels.json
 
-      - name: Sync labels
+      - name: Sync labels from local config
         uses: EndBug/label-sync@v2
         with:
-          config-file: https://raw.githubusercontent.com/qlerup/my-automation-repo/main/labels.json
+          config-file: labels.json
           delete-other-labels: true
-
-          # NØDVENDIG hvis my-automation-repo er privat:
-          request-token: ${{ secrets.LABEL_SYNC_TOKEN }}
