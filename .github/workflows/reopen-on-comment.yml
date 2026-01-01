@@ -40,6 +40,30 @@ jobs:
             const repo = context.repo.repo;
             const number = issue.number;
 
+            const labelsToRemove = [
+              "Bug fixed - released",
+              "Feature added - released",
+            ];
+
+            async function removeLabelIfExists(name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: number,
+                  name,
+                });
+                core.info(`Removed label: "${name}"`);
+              } catch (err) {
+                // 404 = label findes ikke på issuet (eller label-navn matcher ikke 100%)
+                if (err?.status === 404) {
+                  core.info(`Label not present (or name mismatch): "${name}"`);
+                  return;
+                }
+                throw err;
+              }
+            }
+
             // Hvis det er en PR (issue_comment gælder også PR's), brug pulls.update
             if (issue.pull_request) {
               core.info(`Reopening PR #${number}...`);
@@ -49,6 +73,11 @@ jobs:
                 pull_number: number,
                 state: "open",
               });
+
+              // Fjern labels efter reopen
+              for (const name of labelsToRemove) {
+                await removeLabelIfExists(name);
+              }
               return;
             }
 
@@ -60,3 +89,8 @@ jobs:
               issue_number: number,
               state: "open",
             });
+
+            // Fjern labels efter reopen
+            for (const name of labelsToRemove) {
+              await removeLabelIfExists(name);
+            }
