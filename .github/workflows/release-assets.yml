@@ -1,4 +1,4 @@
-name: Attach JS to Release
+name: Attach Integration ZIP to Release
 
 on:
   release:
@@ -8,17 +8,58 @@ permissions:
   contents: write
 
 jobs:
-  upload-asset:
+  build-and-upload:
     runs-on: ubuntu-latest
+    env:
+      INTEGRATION: thermostat_timeline
+      HACS_ZIP: thermostat-pro-timeline-sync.zip
+
     steps:
       - uses: actions/checkout@v4
 
-      # (valgfrit) tjek at filen findes
-      - run: test -f this-is-a-testing-repo.js
+      - name: Verify required files exist
+        run: |
+          test -f "custom_components/${{ env.INTEGRATION }}/manifest.json"
+          test -f "hacs.json"
+          test -f "thermostat-pro-timeline.js"
 
-      - name: Upload JS asset
+      - name: Extract version from tag
+        id: ver
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          VER="${TAG#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Update manifest.json with release version
+        run: |
+          jq --arg v "${{ steps.ver.outputs.version }}" '.version=$v' \
+            "custom_components/${{ env.INTEGRATION }}/manifest.json" \
+            > manifest.tmp
+          mv manifest.tmp "custom_components/${{ env.INTEGRATION }}/manifest.json"
+
+      - name: Build ZIP for release (integration in ZIP root + www folder)
+        run: |
+          mkdir -p dist
+          STAGE="dist/stage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+
+          # 1) Læg integrationens INDHOLD i ZIP-roden (ingen custom_components mappe i ZIP'en)
+          cp -a "custom_components/${{ env.INTEGRATION }}/." "$STAGE/"
+
+          # 2) Tilføj www/ og JS filen fra repo-roden
+          mkdir -p "$STAGE/www"
+          cp -f "thermostat-pro-timeline.js" "$STAGE/www/thermostat-pro-timeline.js"
+
+          # 3) Zip alt fra stage-roden
+          (cd "$STAGE" && zip -r "../${{ env.HACS_ZIP }}" . \
+            -x "**/__pycache__/*" "**/*.pyc" ".DS_Store" ".git/*")
+
+      - name: Upload ZIP asset to release
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: this-is-a-testing-repo.js
+          files: |
+            dist/thermostat-pro-timeline-sync.zip
+          fail_on_unmatched_files: true
