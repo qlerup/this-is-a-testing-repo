@@ -19,6 +19,8 @@ from typing import Any, Optional
 
 from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION, SIGNAL_UPDATED, BACKUP_STORAGE_KEY
 
+from .frontend import ensure_frontend
+
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
@@ -237,6 +239,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["store"] = store
+
+    # Ensure Lovelace card JS is available and resource is registered (best-effort)
+    try:
+        await ensure_frontend(hass)
+    except Exception:
+        _LOGGER.debug("%s: ensure_frontend failed", DOMAIN, exc_info=True)
 
     # --- Multi-instance store support (backwards compatible) ---
     instances: dict[str, Any] = {}
