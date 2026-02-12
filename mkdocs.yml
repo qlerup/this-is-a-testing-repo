@@ -1,0 +1,10 @@
+site_name: Mit Projekt
+theme:
+  name: material
+
+nav:
+  - Forside: index.md
+  - Installation: installation.md
+  - Custom cards: cards.md
+  - Eksempler: examples.md
+  - Fejlfinding: troubleshooting.md
