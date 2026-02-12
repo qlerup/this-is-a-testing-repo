@@ -1,6 +1,4 @@
-### `docs/getting-started/quick-start.md`
-```md
-# Quick start (minimal YAML)
+### Quick start (minimal YAML)
 
 Add the card to any dashboard view:
 
