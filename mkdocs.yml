@@ -1,8 +1,51 @@
 site_name: Thermostat Pro Timeline - Wiki
+repo_name: qlerup/thermostat-pro-timeline
+repo_url: https://github.com/qlerup/thermostat-pro-timeline
+
 theme:
   name: material
+  features:
+    - navigation.expand
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - tables
+  - def_list
 
 nav:
-  - Forside: index.md
-  - Installation: installation.md
-  - Custom cards: cards.md
+  - Home: index.md
+
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quick-start.md
+
+  - Card:
+      - Overview: card/overview.md
+      - Configuration: card/configuration.md
+      - Examples: card/examples.md
+
+  - Integration:
+      - Services: integration/services.md
+      - Storage, instances & backup: integration/storage.md
+      - API endpoints: integration/api.md
+
+  - Advanced:
+      - Weekdays & profiles: advanced/weekdays-profiles.md
+      - Presence & away mode: advanced/presence-away.md
+      - Holidays: advanced/holidays.md
+      - Seasonal schedules: advanced/seasonal.md
+      - Open Window Detection: advanced/open-window.md
+      - Boiler control: advanced/boiler.md
+      - Color ranges: advanced/colors.md
+
+  - Troubleshooting: troubleshooting.md
+  - License & credits: license.md
