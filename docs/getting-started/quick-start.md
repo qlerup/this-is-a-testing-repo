@@ -11,3 +11,4 @@ entities:
 default_temp: 20
 min_temp: 5
 max_temp: 25
+```
