@@ -29,3 +29,8 @@
 resources:
   - url: /local/thermostat-pro-timeline.js
     type: module
+```
+## Notes
+- If the resource is missing: hard refresh browser cache.
+- Storage dashboards: integration handles resource + cache-busting.
+- YAML dashboards: add resource manually as shown.
