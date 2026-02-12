@@ -1,4 +1,4 @@
-### Quick start (minimal YAML)
+# Quick start (minimal YAML)
 
 Add the card to any dashboard view:
 
